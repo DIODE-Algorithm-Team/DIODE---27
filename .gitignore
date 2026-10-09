@@ -1,0 +1,33 @@
+.vscode/
+.github/
+build/
+Camera/
+logs/
+assets/img_with_q/
+records/
+records_auto_buff_big/
+records_new/
+imgs/
+MvSdkLog/
+testvideos/
+watchdog.sh
+records_24/
+records_25/
+# IDE和编辑器缓存
+.vs/
+.idea/
+.vscode/
+
+# 编译输出和日志
+build/
+logs/
+out/
+*.log
+
+# 压缩包和临时文件
+openvino.zip
+*.zip
+*.tar.gz
+
+# 那个奇怪的AI提示词文件（建议在文件管理器里直接删掉）
+让我查看各个兵种的主程序文件，了解它们的模块使用和逻辑流程。.txt

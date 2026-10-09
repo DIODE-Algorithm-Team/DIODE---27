@@ -1,0 +1,24 @@
+pattern_cols: 11
+pattern_rows: 8
+center_distance_mm: 20 #棋盘格
+
+R_gimbal2imubody: [1, 0, 0, 0, 1, 0,  0, 0, 1]
+
+camera_name: "hikrobot"
+exposure_ms: 3
+gain: 10.0
+vid_pid: "2bdf:0001"
+
+# ChArUco 标定板参数
+use_charuco: true                    # true=使用ChArUco, false=使用棋盘格
+charuco_dict: 7                      # 字典ID: 7=DICT_7X7_1000 (7×7)
+charuco_squares_x: 14                # 横向格数
+charuco_squares_y: 9                 # 纵向格数
+charuco_square_length_mm: 20         # 方格边长 (mm)
+charuco_marker_length_mm: 15         # ArUco marker 边长 (mm)
+
+#####-----cboard参数-----#####
+quaternion_canid: 0x01
+bullet_speed_canid: 0x110
+send_canid: 0xff
+can_interface: "can0"
