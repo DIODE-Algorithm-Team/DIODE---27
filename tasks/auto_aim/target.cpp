@@ -269,6 +269,10 @@ std::vector<Eigen::Vector4d> Target::armor_xyza_list() const
 
 bool Target::diverged() const
 {
+  // 默认构造的 Target 还没有初始化 EKF（x 为空），此时不能按下标访问。
+  // 未初始化视为“不可用”，由 Tracker 按 lost 处理，避免越界崩溃。
+  if (ekf_.x.size() < 11) return true;
+
   auto r_ok = ekf_.x[8] > 0.05 && ekf_.x[8] < 0.5;
   auto l_ok = ekf_.x[8] + ekf_.x[9] > 0.05 && ekf_.x[8] + ekf_.x[9] < 0.5;
 

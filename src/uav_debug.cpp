@@ -150,6 +150,12 @@ int main(int argc, char * argv[])
       data["nis_fail"] = target.ekf().data.at("nis_fail");
       data["nees_fail"] = target.ekf().data.at("nees_fail");
       data["recent_nis_failures"] = target.ekf().data.at("recent_nis_failures");
+      // 标准 NIS（pre-fit）与 innovation：调参/看板使用，不参与门控
+      data["nis_prefit"] = target.ekf().data.at("nis_prefit");
+      data["innovation_yaw"] = target.ekf().data.at("innovation_yaw");
+      data["innovation_pitch"] = target.ekf().data.at("innovation_pitch");
+      data["innovation_distance"] = target.ekf().data.at("innovation_distance");
+      data["innovation_angle"] = target.ekf().data.at("innovation_angle");
     }
 
     // 云台响应情况

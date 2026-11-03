@@ -44,6 +44,50 @@ Aimer::Aimer(const std::string & config_path)
   max_yaw_acc_ = yaml["max_yaw_acc"].IsDefined() ? yaml["max_yaw_acc"].as<double>() : 200.0;
   attack_preaim_ =
     yaml["attack_preaim"].IsDefined() ? yaml["attack_preaim"].as<bool>() : false;
+
+  // 工作流 C：弹道参数（可选段；不写则完全保持老行为）
+  if (yaml["ballistics"].IsDefined()) {
+    const auto b = yaml["ballistics"];
+    const auto get_d = [&](const char * key, double def) {
+      return b[key].IsDefined() ? b[key].as<double>() : def;
+    };
+
+    ballistic_params_.gravity = get_d("gravity", ballistic_params_.gravity);
+    ballistic_params_.rk4_step = get_d("rk4_step", ballistic_params_.rk4_step);
+    ballistic_params_.max_fly_time = get_d("max_fly_time", ballistic_params_.max_fly_time);
+    ballistic_params_.max_iterations =
+      static_cast<int>(get_d("max_iterations", ballistic_params_.max_iterations));
+
+    const double c_direct = get_d("resistance_coefficient", 0.0);
+    if (c_direct > 0.0) {
+      ballistic_params_.resistance = c_direct;
+    } else {
+      ballistic_params_.resistance = tools::BallisticParams::resistance_from(
+        get_d("bullet_mass", 0.0032), get_d("bullet_diameter", 0.017),
+        get_d("drag_coefficient", 0.47), get_d("air_density", 1.204));
+    }
+    use_drag_ = true;
+    tools::logger()->info(
+      "[Aimer] ballistics enabled: c={:.5f} 1/m, g={:.4f}, step={:.4f}s",
+      ballistic_params_.resistance, ballistic_params_.gravity, ballistic_params_.rk4_step);
+  }
+}
+
+Aimer::TrajSolution Aimer::solve_trajectory(
+  double bullet_speed, const Eigen::Vector3d & xyz) const
+{
+  if (use_drag_) {
+    const auto solution = tools::solve_ballistic(bullet_speed, xyz, ballistic_params_);
+    if (solution.solvable) return {false, solution.fly_time, solution.pitch};
+    // 求解失败（超射程/初速过低）：回退真空解析解，绝不输出非法角度
+    tools::logger()->debug("[Aimer] drag ballistic unsolvable, fallback to vacuum");
+  }
+
+  const double d = std::hypot(xyz.x(), xyz.y());
+  tools::Trajectory analytic(bullet_speed, d, xyz.z());
+  if (analytic.unsolvable) return {true, 0.0, 0.0};
+
+  return {false, analytic.fly_time, analytic.pitch};
 }
 
 io::Command Aimer::aim(
@@ -95,7 +139,7 @@ io::Command Aimer::aim(
 
   Eigen::Vector3d xyz0 = aim_point0.xyza.head(3);
   auto d0 = std::sqrt(xyz0[0] * xyz0[0] + xyz0[1] * xyz0[1]);
-  tools::Trajectory trajectory0(bullet_speed, d0, xyz0[2]);
+  auto trajectory0 = solve_trajectory(bullet_speed, xyz0);
   if (trajectory0.unsolvable) {
     tools::logger()->debug(
       "[Aimer] Unsolvable trajectory0: {:.2f} {:.2f} {:.2f}", bullet_speed, d0, xyz0[2]);
@@ -106,7 +150,7 @@ io::Command Aimer::aim(
   // 迭代求解飞行时间 (最多10次，收敛条件：相邻两次fly_time差 <0.001)
   bool converged = false;
   double prev_fly_time = trajectory0.fly_time;
-  tools::Trajectory current_traj = trajectory0;
+  auto current_traj = trajectory0;
   std::vector<Target> iteration_target(10, target);  // 创建10个目标副本用于迭代预测
 
   for (int iter = 0; iter < 10; ++iter) {
@@ -124,7 +168,7 @@ io::Command Aimer::aim(
     // 计算新弹道
     Eigen::Vector3d xyz = aim_point.xyza.head(3);
     double d = std::sqrt(xyz.x() * xyz.x() + xyz.y() * xyz.y());
-    current_traj = tools::Trajectory(bullet_speed, d, xyz.z());
+    current_traj = solve_trajectory(bullet_speed, xyz);
 
     // 检查弹道是否可解
     if (current_traj.unsolvable) {

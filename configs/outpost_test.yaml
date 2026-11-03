@@ -1,0 +1,129 @@
+# =============================================================================
+# 前哨站（Outpost）外接相机测试专用配置
+#
+# 用途：把「外接相机（USB / UVC，/dev/video*）」+「前哨站 5 维自瞄链路」跑起来，
+#       既能做纯视觉验证（不开云台），也能做闭环自瞄（串口/CAN 下发云台指令）。
+#
+# 与 configs/example.yaml 的区别：
+#   1. 补齐了 Tracker 的必需键 outpost_max_temp_lost_count（缺失会直接抛 YAML 异常）；
+#   2. 显式写出前哨站开火控制参数（attack_window / window_hysteresis / ...）；
+#   3. 标注了哪些键必须按你自己机器的标定结果替换。
+#
+# ★ 必须按实车替换的键（下面用 [必改] 标注）：
+#     enemy_color          敌方颜色，必须与实际打的前哨站颜色一致
+#     camera_matrix        USB 相机内参（重标定后的值）
+#     distort_coeffs       USB 相机畸变（5 参数）
+#     R_camera2gimbal      相机→云台旋转（手眼标定）
+#     t_camera2gimbal      相机→云台平移
+#
+# ★ 相机不同型号需要改的键（[按机] 标注）：
+#     image_width/height, usb_exposure, usb_gain, usb_frame_rate
+#     注意：USBCamera 读的是 usb_* 这一组键，与 camera_name/vid_pid/exposure_ms 无关。
+# =============================================================================
+
+# [必改] red 或 blue，与场地上的前哨站颜色一致
+enemy_color: "blue"
+
+#####-----神经网络参数-----#####
+yolo_name: yolov5
+classify_model: assets/tiny_resnet.onnx
+yolo11_model_path: assets/yolo11.xml
+yolov8_model_path: assets/yolov8.xml
+yolov5_model_path: assets/yolov5.xml
+device: GPU              # 无核显/NCS 时改成 CPU
+min_confidence: 0.8
+use_traditional: true
+
+#####-----ROI（可选，裁剪可提速）-----#####
+roi:
+  x: 420
+  y: 50
+  width: 600
+  height: 600
+
+use_roi: false
+
+#####-----USB 外接相机参数（[按机] 调整）-----#####
+image_width: 1920
+image_height: 1080
+usb_frame_rate: 60       # 实际能跑到多少以 v4l2-ctl --list-formats-ext 为准
+usb_exposure: 250        # 1-80000，越小越暗；曝光过大前哨站灯条会糊
+usb_gamma: 160
+usb_gain: 10             # 0-96
+
+#####-----传统方法参数-----#####
+threshold: 150
+max_angle_error: 45      # degree
+min_lightbar_ratio: 1.5
+max_lightbar_ratio: 20
+min_lightbar_length: 8
+min_armor_ratio: 1
+max_armor_ratio: 5
+max_side_ratio: 1.5
+max_rectangular_error: 25 # degree
+
+#####-----tracker 参数-----#####
+min_detect_count: 5
+max_temp_lost_count: 15
+# 前哨站丢失容忍帧数：Tracker 构造时无条件读取该键，缺失会直接抛异常
+outpost_max_temp_lost_count: 75
+
+#####-----aimer 参数-----#####
+yaw_offset: -2.5         # degree，实车对靶纸微调
+pitch_offset: 3          # degree
+comming_angle: 60        # degree
+leaving_angle: 20        # degree
+decision_speed: 7        # rad/s
+high_speed_delay_time: 0.0
+low_speed_delay_time: 0.0
+
+#####-----前哨站开火控制（PR-5，缺省值见 aimer.cpp）-----#####
+attack_window: 40        # degree，攻击窗口全幅（与动态窗口取 min）
+window_hysteresis: 0.2   # 施密特滞回：enter=half*0.8 / exit=half*1.2
+degraded_angle_speed: 12 # rad/s，超过则不输出云台控制（前哨站 0.8π≈2.51 不触发）
+window_redundancy: 0.8   # 云台速度/加速度裕度
+max_yaw_vel: 10          # rad/s，云台最大 yaw 角速度（动态窗口反解用）
+max_yaw_acc: 200         # rad/s^2，云台最大 yaw 角加速度
+attack_preaim: false     # 预瞄边界点是否允许开火；false=只跟踪不开火
+
+#####-----shooter 参数-----#####
+first_tolerance: 3       # degree，近距离射击容差
+second_tolerance: 2      # degree，远距离射击容差
+judge_distance: 2        # 距离判断阈值 m
+auto_fire: true          # false = 只输出瞄准量，永远不开火（首次联调建议 false）
+
+#####-----相机外参（[必改] USB 相机手眼标定结果）-----#####
+R_gimbal2imubody: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+
+# 下面这组是 configs/example.yaml 的 USB 相机标定值，仅作占位：换相机必须重标定
+camera_matrix: [1295.4665175006589, 0, 655.71498478800618, 0, 1297.2591156991834, 506.21320670125334, 0, 0, 1]
+distort_coeffs: [-0.48599095566724387, 0.23999516531343185, -0.00029018466701866776, -0.00083639963030895752, 0]
+
+R_camera2gimbal: [0.046736929626455238, -0.055211941324114208, 0.99738021884550865, -0.99881598162461238, -0.016078770676278314, 0.0459141370909011, 0.013501639172863072, -0.99834518813322415, -0.055898041744621867]
+t_camera2gimbal: [0.27420934670256336, 0.0098763306562371159, 0.043798385984197351]
+
+#####-----通信：CAN（io::CBoard 用）-----#####
+quaternion_canid: 0x01
+bullet_speed_canid: 0x110
+send_canid: 0xff
+can_interface: "can0"
+
+#####-----弹道（工作流 C，标定后再启用）-----#####
+# 取消下面整段注释即启用阻力弹道；不写这一段时 Aimer 走原有无阻力解析解（行为不变）。
+# 顺序：先做落点法标定 c（见 docs/ballistics_design.md §5），再把实测值填进 resistance_coefficient。
+#
+# ballistics:
+#   bullet_mass: 0.0032          # kg
+#   bullet_diameter: 0.017       # m
+#   drag_coefficient: 0.47       # 无量纲，仅用于算初值
+#   air_density: 1.204           # kg/m^3
+#   resistance_coefficient: 0.0  # 1/m；>0 时直接覆盖上面四项（实测优先，推荐）
+#   gravity: 9.7833
+#   rk4_step: 0.002
+#   max_fly_time: 3.0
+#   max_iterations: 12
+
+#####-----通信：串口（io::Gimbal 用；波特率由串口库默认 9600 决定）-----#####
+# 下位机若用串口通信，把端口改成你实际的（/dev/ttyUSB0 或 udev 软链 /dev/gimbal）；
+# io::Gimbal 只 setPort 不 setBaudrate，即 9600 8N1，下位机不是这个波特率就要改 io/gimbal/gimbal.cpp。
+com_port: "/dev/gimbal"

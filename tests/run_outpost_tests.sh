@@ -108,10 +108,11 @@ build_cmake() {
       cat <<'EOF'
 
 [ERROR] CMake 配置失败。最常见原因是 OpenVINO：
-  - 仓库 CMakeLists.txt L15 与 tasks/auto_aim/CMakeLists.txt L3 把 OpenVINO_DIR
-    硬编码为 /home/gzy/openvino_env/lib/python3.12/site-packages/openvino/cmake，
-    换机器后该路径不存在，find_package(OpenVINO REQUIRED) 会直接失败。
-    修改这两处为你自己的 OpenVINO 路径，例如：
+  - 仓库 CMakeLists.txt 会优先使用 -DOpenVINO_DIR=...；未指定时回退到本机
+    已知的 Python wheel 路径，再找不到就交给 find_package 搜索系统安装。
+    若仍失败，请显式指定你机器上的 OpenVINO cmake 目录，例如：
+      cmake -S . -B build -DOpenVINO_DIR=/usr/lib/cmake/openvino2024.6.0
+    或：
       python3 -c 'import openvino,os;print(os.path.join(os.path.dirname(openvino.__file__),"cmake"))'
   - 只想验证前哨站这 4 个测试（它们并不链接 OpenVINO）时，可直接用：
       bash tests/run_outpost_tests.sh --standalone
@@ -161,6 +162,7 @@ build_standalone() {
   local TOOLS_SRC=(
     "$REPO_ROOT/tools/math_tools.cpp"
     "$REPO_ROOT/tools/trajectory.cpp"
+    "$REPO_ROOT/tools/ballistics.cpp"
     "$REPO_ROOT/tools/extended_kalman_filter.cpp"
     "$REPO_ROOT/tools/logger.cpp"
   )

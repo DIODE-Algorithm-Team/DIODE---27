@@ -1,6 +1,4 @@
 cmake_minimum_required(VERSION 3.16)
-set(OpenVINO_DIR "/home/gzy/openvino_env/lib/python3.12/site-packages/openvino/cmake")
-
 find_package(OpenVINO REQUIRED)
 find_package(Ceres REQUIRED)
 

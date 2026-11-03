@@ -8,6 +8,7 @@
 #include "io/cboard.hpp"
 #include "io/command.hpp"
 #include "target.hpp"
+#include "tools/ballistics.hpp"
 
 namespace auto_aim
 {
@@ -52,6 +53,20 @@ private:
   double max_yaw_acc_;          // 云台最大 yaw 角加速度（rad/s²）
   bool attack_preaim_;          // 预瞄边界点时是否允许开火（默认 false：只跟踪不开火）
   int outpost_lock_id_ = -1;    // 施密特滞回锁定的板号（跨帧保持）
+
+  // 工作流 C：弹道求解（配置里没有 ballistics 段时不启用，行为与老版本一致）
+  bool use_drag_ = false;
+  tools::BallisticParams ballistic_params_;
+
+  struct TrajSolution
+  {
+    bool unsolvable;
+    double fly_time;
+    double pitch;
+  };
+
+  /// @brief 统一入口：启用弹道模型时走 drag 求解，失败回退真空解析解
+  TrajSolution solve_trajectory(double bullet_speed, const Eigen::Vector3d & xyz) const;
 
   AimPoint choose_aim_point(const Target & target);
 

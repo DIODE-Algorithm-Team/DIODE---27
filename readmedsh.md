@@ -63,11 +63,15 @@ python3 tools/debug/dashboard.py --csv run.csv
 
 ## 编译与验证
 
+> 2026-11-03 已在 Ubuntu 24.04 / GCC 13.3 上完成全量构建与离线测试，结果见
+> [docs/verification_report.md](docs/verification_report.md)（含环境、修复项、日志与未验证部分）。
+
 ```bash
 cmake -S . -B build && cmake --build build -j"$(nproc)"
 
-./build/ballistic_solver_test          # 弹道求解器单测
-bash tests/run_outpost_tests.sh --standalone   # 前哨站 4 个测试
+./build/ballistic_solver_test                  # 弹道求解器单测
+bash tests/run_outpost_tests.sh                # 前哨站 4 个测试（复用 build/）
+bash tests/run_outpost_tests.sh --standalone   # 不依赖 OpenVINO 的独立编译
 ```
 
 ---

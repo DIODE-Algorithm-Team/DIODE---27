@@ -12,7 +12,10 @@ find_package(Eigen3 REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(nlohmann_json REQUIRED)
-set(OpenVINO_DIR "/home/gzy/openvino_env/lib/python3.12/site-packages/openvino/cmake")
+# OpenVINO 安装位置可由 -DOpenVINO_DIR=... 覆盖；否则回退到本机已知的 Python wheel 安装
+if(NOT OpenVINO_DIR AND EXISTS "/home/gzy/openvino_env/lib/python3.12/site-packages/openvino/cmake")
+  set(OpenVINO_DIR "/home/gzy/openvino_env/lib/python3.12/site-packages/openvino/cmake")
+endif()
 find_package(OpenVINO REQUIRED)
 
 include_directories(${EIGEN3_INCLUDE_DIR})
@@ -130,30 +133,18 @@ add_executable(outpost_aimer_test
 )
 target_link_libraries(outpost_aimer_test ${OpenCV_LIBS} fmt::fmt yaml-cpp tools io)
 
-# 检查 ROS 环境
-find_package(ament_cmake QUIET)
-find_package(rclcpp QUIET)
-find_package(std_msgs QUIET)
-find_package(rosidl_typesupport_cpp QUIET)
-find_package(sp_msgs QUIET)
-# 只有在找到 ROS 环境时才会添加 sentry 和 publish_test
-if(ament_cmake_FOUND AND rclcpp_FOUND AND std_msgs_FOUND AND rosidl_typesupport_cpp_FOUND AND sp_msgs_FOUND)
-    # 编译 sentry 和 publish_test
-    add_executable(sentry src/sentry.cpp)
-    add_executable(sentry_bp src/sentry_bp.cpp)
-    add_executable(sentry_debug src/sentry_debug.cpp)
-    add_executable(sentry_multithread src/sentry_multithread.cpp)
-    add_executable(publish_test tests/publish_test.cpp)
-    add_executable(subscribe_test tests/subscribe_test.cpp)
-    add_executable(topic_loop_test tests/topic_loop_test.cpp)
+# 工作流 C：弹道求解器单测（仅依赖 Eigen + tools，不需要 OpenVINO）
+add_executable(ballistic_solver_test tests/ballistic_solver_test.cpp)
+target_link_libraries(ballistic_solver_test ${OpenCV_LIBS} fmt::fmt tools)
 
-    target_link_libraries(sentry ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(sentry_bp ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(sentry_debug ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(sentry_multithread ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
-    target_link_libraries(publish_test ${OpenCV_LIBS} fmt::fmt tools io auto_aim)
-    target_link_libraries(subscribe_test ${OpenCV_LIBS} fmt::fmt tools io)
-    target_link_libraries(topic_loop_test ${OpenCV_LIBS} fmt::fmt tools io)
-else()
-    message(STATUS "ROS2 environment not found, skipping ROS2-related code.")
-endif()
+##################sentry###################
+# 已去 ROS 化：sentry 系列无条件编译，不再依赖任何 ROS 包
+add_executable(sentry src/sentry.cpp)
+add_executable(sentry_bp src/sentry_bp.cpp)
+add_executable(sentry_debug src/sentry_debug.cpp)
+add_executable(sentry_multithread src/sentry_multithread.cpp)
+
+target_link_libraries(sentry ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
+target_link_libraries(sentry_bp ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
+target_link_libraries(sentry_debug ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)
+target_link_libraries(sentry_multithread ${OpenCV_LIBS} fmt::fmt yaml-cpp auto_aim omniperception tools io)

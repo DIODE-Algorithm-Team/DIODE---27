@@ -5,6 +5,12 @@
 #include <opencv2/aruco.hpp>
 #include <opencv2/opencv.hpp>
 
+// OpenCV < 4.7 把 ChArUco API 放在 opencv_contrib 的 aruco/charuco.hpp，
+// 4.7+ 合并进 objdetect 并由 opencv2/aruco.hpp 统一导出。
+#if defined(CV_VERSION_MAJOR) && (CV_VERSION_MAJOR == 4) && (CV_VERSION_MINOR < 7)
+#include <opencv2/aruco/charuco.hpp>
+#endif
+
 #include "tools/img_tools.hpp"
 
 const std::string keys =
@@ -83,7 +89,8 @@ void load_charuco(const std::string &input_folder,
   int squares_y = yaml["charuco_squares_y"].as<int>();
   float square_length_mm = yaml["charuco_square_length_mm"].as<float>();
   float marker_length_mm = yaml["charuco_marker_length_mm"].as<float>();
-  int dict_id = yaml.value("charuco_dict", 8); // 默认 DICT_6X6_250
+  int dict_id =
+    yaml["charuco_dict"] ? yaml["charuco_dict"].as<int>() : 8; // 默认 DICT_6X6_250
 
   // 转换为米
   float square_length_m = square_length_mm / 1000.0f;
@@ -96,6 +103,14 @@ void load_charuco(const std::string &input_folder,
 
   // ChArUco 内部角点数
   int total_corners = (squares_x - 1) * (squares_y - 1);
+
+  // OpenCV 4.6 的 CharucoBoard 用 chessboardCorners 保存角点 3D 坐标；
+  // 4.7+ 改为 getChessboardCorners()。
+#if defined(CV_VERSION_MAJOR) && (CV_VERSION_MAJOR == 4) && (CV_VERSION_MINOR < 7)
+  const std::vector<cv::Point3f> & board_corners = board->chessboardCorners;
+#else
+  const std::vector<cv::Point3f> board_corners = board->getChessboardCorners();
+#endif
 
   fmt::print("[ChArUco] 板参数: {}x{}, 方格={}mm, marker={}mm, dict={}\n",
              squares_x, squares_y, square_length_mm, marker_length_mm, dict_id);
@@ -139,8 +154,8 @@ void load_charuco(const std::string &input_folder,
 
         for (size_t j = 0; j < charuco_ids.size(); j++) {
           int corner_id = charuco_ids[j];
-          if (corner_id >= 0 && corner_id < (int)board->objPoints.size()) {
-            matched_3d.push_back(board->objPoints[corner_id]);
+          if (corner_id >= 0 && corner_id < (int)board_corners.size()) {
+            matched_3d.push_back(board_corners[corner_id]);
             matched_2d.push_back(charuco_corners[j]);
           }
         }
@@ -204,7 +219,8 @@ int main(int argc, char *argv[]) {
 
   // 读取配置，判断使用 ChArUco 还是棋盘格
   auto yaml = YAML::LoadFile(config_path);
-  bool use_charuco = yaml.value("use_charuco", false);
+  bool use_charuco =
+    yaml["use_charuco"] ? yaml["use_charuco"].as<bool>() : false;
 
   if (use_charuco) {
     fmt::print("使用 ChArUco 标定板\n");

@@ -1,0 +1,396 @@
+由于空气阻力的特殊性质，导致无法对弹道求解析解，目前有些开源将阻力建模简化为$$f\propto v$$，也有些直接简化掉空气阻力在单个方向下的影响，以此达到简化的效果
+本文章提出一种，在不改变空气阻力建模$$f\propto v^2$$的条件下，以一种高效率的算法，能够同时求解出云台角度以及弹丸拦截点信息，且支持求解未来一段时间的云台参考角度和拦截信息，便于适配济瞄引入的mpc云台控制器
+本算法由codex辅助完成，仅为理论参考
+文档由人工手动编写，可以放心食用
+目前还没有实际打弹测试，仅做了仿真精度验证
+
+---
+现有问题整理
+1. 可观测物理量
+令当前时刻为$$t_0
+$$
+- 云台当前姿态
+- 枪口相对云台的安装几何
+- 弹丸初速度$$v_0$$
+- 弹丸质量$$m$$
+- 弹丸直径$$d$$
+- 阻力系数$$C_D$$
+- 空气密度$$\rho$$
+- 重力加速度$$g$$
+- 目标当前状态和运动模型
+目标预测器可以输出第$$i$$块装甲板未来任意时刻的位置：
+$$\boldsymbol{\hat{p}_i}(t)$$
+定义从发送开火指令，到摩擦轮将弹丸完整发射出去的时间差为开火延迟：
+$$t_{delay}$$
+
+2. 未知量
+可以控制的量有：
+$$\psi, \qquad \vartheta$$
+但是仅知道角度仍然不够，因为目标在移动，必须知道弹丸什么时候到达目标。
+因此飞行时间也必须作为未知量：
+$$\tau = t_f$$
+于是未知向量为：
+$$\boldsymbol q= \begin{bmatrix} \psi\\ \vartheta\\ \tau \end{bmatrix}$$
+
+3. 命中条件
+弹丸在时间$$\tau$$后的位置记为：
+$$\boldsymbol{p}_b(\tau; \psi, \vartheta)$$
+本质上弹丸命中问题是一个拦截问题，是弹丸在拦截一个6-DoF移动的目标（装甲板）
+由于在开火延迟时间内，弹丸是静止不动的，所以假设当前时间云台角度满足命中条件，则当下达开火指令后，弹丸拦截时间为 $$t_{delay} + \tau$$
+装甲板在实际命中时刻的位置为：
+$$\boldsymbol{\hat{p}}_i(t_{delay} + \tau)$$
+拦截成功则意味着在某一时刻下，弹丸位置与装甲板位置重合：
+$$\boldsymbol{p}_b(\tau; \psi, \vartheta)=
+\boldsymbol{\hat{p}}_i(t_{delay} + \tau)$$
+移项得：
+$$ \boxed{ \boldsymbol F(\psi,\vartheta,\tau)= \boldsymbol p_b(\tau;\psi,\vartheta) - \hat{\boldsymbol p}_i(t_{\text{delay}}+\tau) = \boldsymbol0 } $$
+此方程决定了算法基本逻辑结构：
+- 三个未知量
+- 三个残差
+- 需要三维非线性方程求解器
+- 弹丸位置与yaw、pitch、飞行时间都有关系
+
+基本坐标系变换
+枪口变换
+枪口不是固定在世界坐标系中的点，也不是与旋转中心完全重合的
+当前系统使用：
+- level_world：固定世界坐标系
+- gimbal_link：当前云台坐标系
+- muzzle_link：枪口坐标系
+枪口变换可写成：
+$$ {}^WT_M(\psi,\vartheta) = {}^WT_G \;{}^GT_M(\psi,\vartheta) $$
+其中：
+- $${}^WT_G$$：当前云台姿态；
+- $${}^GT_M$$：枪口相对云台的旋转和偏心；
+- $$\psi,\vartheta$$：本次求解的角度增量。
+枪口位置为：
+$$ \boldsymbol p_M = \boldsymbol p_G+ R_G R_\psi R_\vartheta \boldsymbol r_{GM} $$
+初速度为：
+$$ \boldsymbol v_M = v_0 R_G R_\psi R_\vartheta\boldsymbol d_0 $$
+因此 yaw/pitch 会同时影响：
+1. 出射方向；
+2. 出射位置；
+3. 后续整条弹道；
+4. 最终命中点。
+这也是为什么简单的“固定枪口二维抛物线”不适用于当前实现。
+
+弹丸位置数学建模
+先说结论：弹丸位置是一个常微分方程（ODE, Ordinary Differential Equation）
+弹丸受到两个力：
+- 重力
+- 空气阻力
+
+重力：
+$$\boldsymbol F_g= \begin{bmatrix} 0\\0\\-mg \end{bmatrix}$$
+空气阻力方向与速度方向相反，大小与速度平方成正比：
+$$\|\boldsymbol F_d\| = \frac12\rho C_D A\|\boldsymbol v\|^2$$
+阻力方向是：
+$$- \frac{\boldsymbol v}{\|\boldsymbol v\|} 
+$$
+所以阻力向量为：
+$$\boldsymbol F_d = -\frac12\rho C_D A \|\boldsymbol v\|\boldsymbol v$$
+令：$$c=\frac{\rho C_D A}{2m}$$
+由于弹丸为球体，则：
+$$A=\frac{\pi d^2}{4}$$
+$$ \boxed{ c=\frac{\rho C_D\pi d^2}{8m} } $$
+得到加速度公式：
+$$\boxed{ \boldsymbol a = \begin{bmatrix} -c\|\boldsymbol v\|v_x\\ -c\|\boldsymbol v\|v_y\\ -g-c\|\boldsymbol v\|v_z \end{bmatrix} }$$
+
+将位置和速度合并为状态空间$$\boldsymbol{x}$$
+$$\boldsymbol x= \begin{bmatrix} p_x&p_y&p_z&v_x&v_y&v_z \end{bmatrix}^{T}$$
+最终一阶常微分方程形式如下：
+$$ \boxed{ \dot{\boldsymbol x} = f(\boldsymbol x) = \begin{bmatrix} v_x\\ v_y\\ v_z\\ -c\sqrt{v_x^2+v_y^2+v_z^2}\,v_x\\ -c\sqrt{v_x^2+v_y^2+v_z^2}\,v_y\\ -g-c\sqrt{v_x^2+v_y^2+v_z^2}\,v_z \end{bmatrix}} $$
+
+此方程没有解析解，所以只能采用数值积分方法进行求近似值
+
+RK4数值积分
+1. ODE积分本质
+对于：
+$$\dot{\boldsymbol x}=f(\boldsymbol x)$$
+从$$t$$到$$t+h$$的精确解满足如下积分：
+$$ \boldsymbol x(t+h) = \boldsymbol x(t) + \int_t^{t+h}f(\boldsymbol x(s))\,ds $$
+问题变成了如何近似此积分
+2. 四阶段斜率
+$$\boldsymbol k_1=f(\boldsymbol x_n)$$
+$$\boldsymbol k_2 = f(\boldsymbol x_n + \frac{h}{2}\boldsymbol k_1)$$
+$$\boldsymbol k_3 = f\left( \boldsymbol x_n+\frac h2\boldsymbol k_2 \right)$$
+$$\boldsymbol k_4 = f(\boldsymbol x_n+h\boldsymbol k_3)$$
+$$\boxed {\boldsymbol x_{n+1} = \boldsymbol x_n+ \frac h6 (\boldsymbol k_1+2\boldsymbol k_2+2\boldsymbol k_3+\boldsymbol k_4) }$$
+
+根据Taylor展开：
+$$\boldsymbol x(t+h) = \boldsymbol x(t) +h\dot{\boldsymbol x} +\frac{h^2}{2}\ddot{\boldsymbol x} +\frac{h^3}{6}\boldsymbol x^{(3)} +\frac{h^4}{24}\boldsymbol x^{(4)} +O(h^5)$$
+RK4全局误差为：
+$$O(h^4)$$
+
+云台角度迭代灵敏度
+什么是“灵敏度”？
+Newton法迭代云台角度时，不仅需要知道当前落点误差，还需要知道：yaw/pitch/$$\tau$$改一点，落点该怎么动？
+1. 如何定义“灵敏度”
+以yaw灵敏度为例
+弹丸位置和速度
+$$\begin{cases} \boldsymbol p(t,\psi,\vartheta) \\ \boldsymbol v(t, \psi, \vartheta) \end{cases}$$
+
+定义yaw轴角度对位置和速度的灵敏度：
+$$\begin{cases} \boldsymbol S_{\psi,p} = \frac{\partial\boldsymbol p}{\partial\psi} \\ \boldsymbol S_{\psi,v} = \frac{\partial\boldsymbol v}{\partial\psi} \end{cases}$$
+yaw灵敏度对时间求导：
+$$\frac{d}{dt} \left( \frac{\partial\boldsymbol p}{\partial\psi} \right) = \frac{\partial\boldsymbol v}{\partial\psi}$$
+因此：
+$$\dot{\boldsymbol S}_{\psi,p} = \boldsymbol S_{\psi,v}$$
+又因为：
+$$\dot{\boldsymbol v} = \boldsymbol a(\boldsymbol v)$$
+得到：
+$$\frac{d}{dt} \left( \frac{\partial\boldsymbol v}{\partial\psi} \right) = \frac{\partial\boldsymbol a}{\partial\boldsymbol v} \frac{\partial\boldsymbol v}{\partial\psi}$$
+即：
+$$\dot{\boldsymbol S}_{\psi,v} = A(\boldsymbol v)\boldsymbol S_{\psi,v}$$
+pitch 灵敏度完全同理：
+$$\dot{\boldsymbol S}_{\vartheta,p} = \boldsymbol S_{\vartheta,v}$$
+$$\dot{\boldsymbol S}_{\vartheta,v} = A(\boldsymbol v)\boldsymbol S_{\vartheta,v}$$
+
+于是得到 18 维联合状态：
+$$\boldsymbol X= \begin{bmatrix} \boldsymbol p\\ \boldsymbol v\\ \boldsymbol S_{\psi,p}\\ \boldsymbol S_{\psi,v}\\ \boldsymbol S_{\vartheta,p}\\ \boldsymbol S_{\vartheta,v} \end{bmatrix}$$
+
+2. 灵敏度初值
+当前枪口存在偏心：
+$$ \boldsymbol p_M = \boldsymbol p_G+ R_\psi R_\vartheta\boldsymbol r_{GM} $$
+所以：
+$$ \frac{\partial\boldsymbol p_M}{\partial\psi} \neq0$$
+$$ \frac{\partial\boldsymbol p_M}{\partial\vartheta} \neq0$$
+旋转向量的导数为：
+$$ \frac{\partial}{\partial\theta} (R_\theta\boldsymbol r) = \boldsymbol a\times R_\theta\boldsymbol r $$
+因此：
+$$ \boldsymbol S_{\psi,p}(0) = \frac{\partial\boldsymbol p_M}{\partial\psi} $$
+$$
+ \boldsymbol S_{\vartheta,p}(0) = \frac{\partial\boldsymbol p_M}{\partial\vartheta} $$
+出射速度：
+$$ \boldsymbol v_M=v_0\boldsymbol d_M $$
+所以：
+$$\boldsymbol S_{\psi,v}(0) = v_0 \frac{\partial\boldsymbol d_M}{\partial\psi} $$
+$$ \boldsymbol S_{\vartheta,v}(0) = v_0 \frac{\partial\boldsymbol d_M}{\partial\vartheta} $$
+
+
+从灵敏度到Newton Jacobian
+定义命中残差函数：
+$$\boldsymbol F(\psi,\vartheta,\tau) = \boldsymbol p_b(\tau;\psi,\vartheta) - \hat{\boldsymbol p}_i(t_{\text{delay}}+\tau)$$
+1. 对yaw求导
+由于：
+$$\frac{\partial\hat{\boldsymbol p}_i}{\partial\psi}=0$$
+因此：
+$$\frac{\partial\boldsymbol F}{\partial\psi} = \frac{\partial\boldsymbol p_b}{\partial\psi} = \boldsymbol S_{\psi,p}(\tau)$$
+2. 对pitch求导
+同理：
+$$ \frac{\partial\boldsymbol F}{\partial\vartheta} = \boldsymbol S_{\vartheta,p}(\tau) $$
+3. 对飞行时间求导
+弹丸端点随时间变化的速度是：
+$$ \frac{\partial\boldsymbol p_b}{\partial\tau} = \boldsymbol v_b(\tau)$$
+目标端点随时间变化的速度为：
+$$ \dot{\boldsymbol p}_i $$
+所以：
+$$ \frac{\partial\boldsymbol F}{\partial\tau} = \boldsymbol v_b(\tau) - \dot{\boldsymbol p}_i(t_{\text{delay}}+\tau) $$
+目标预测器不提供解析速度时，用中心差分：
+$$ \dot{\boldsymbol p}_i(t) \approx \frac{ \hat{\boldsymbol p}_i(t+\delta) - \hat{\boldsymbol p}_i(t-\delta) }{2\delta} $$
+最终 Jacobian：
+$$ \boxed{ J= \begin{bmatrix} \boldsymbol S_{\psi,p}(\tau)& \boldsymbol S_{\vartheta,p}(\tau)& \boldsymbol v_b(\tau)-\dot{\boldsymbol p}_i \end{bmatrix} } $$
+从残差线性化到Newton迭代
+在当前估计：
+$$ \boldsymbol q_k= \begin{bmatrix} \psi_k\\ \vartheta_k\\ \tau_k \end{bmatrix} $$
+附近，对残差做 Taylor 一阶展开：
+$$ \boldsymbol F(\boldsymbol q_k+\Delta\boldsymbol q) \approx \boldsymbol F(\boldsymbol q_k) + J_k\Delta\boldsymbol q $$
+我们希望下一步已经命中：
+$$ \boldsymbol F(\boldsymbol q_k+\Delta\boldsymbol q)=0 $$
+代入：
+$$ \boldsymbol F(\boldsymbol q_k) + J_k\Delta\boldsymbol q=0 $$
+所以：
+$$ \boxed{ J_k\Delta\boldsymbol q = -\boldsymbol F(\boldsymbol q_k) } $$
+求出：
+$$ \Delta\boldsymbol q= \begin{bmatrix} \Delta\psi\\ \Delta\vartheta\\ \Delta\tau \end{bmatrix} $$
+然后更新：
+$$ \boldsymbol q_{k+1} = \boldsymbol q_k+\Delta\boldsymbol q $$
+工程上为了稳定，一般加入限幅：
+$$ \Delta\psi\leftarrow \operatorname{clip}(\Delta\psi) $$
+$$ \Delta\vartheta\leftarrow \operatorname{clip}(\Delta\vartheta) $$
+$$ \Delta\tau\leftarrow \operatorname{clip}(\Delta\tau) $$
+从单次求解到完整时域
+为了适配后续MPC轨迹规划算法，仅仅对本时刻进行求解是远远不够的，至少需要求出未来一段时间内的云台角度都规划出来。
+简单的将这一步重复多次没有任何意义，会大幅度增加算力需求
+
+算法推导
+定义规划时长$$s$$:
+$$s=j\Delta t_h$$
+第$$j$$个规划点的目标预测函数为：
+$$\hat{\boldsymbol p}_i(s+\tau)$$
+因此每一个规划点都存在一个方程：
+$$\boldsymbol F_i (\boldsymbol q, s) = 0$$
+其中：
+$$\boldsymbol q(s) = \begin{bmatrix}
+\psi(s) \\
+\vartheta(s) \\
+\tau(s)
+\end{bmatrix}$$
+如果相邻规划时刻的解连续，则：
+$$\boldsymbol q(s+\Delta s) \approx \boldsymbol q(s)$$
+这就是为什么上一时域点的解可以作为下一点 Newton 的初值。
+更进一步，对：
+$$\boldsymbol F(\boldsymbol q(s),s)=0$$
+对$$s$$求导：
+$$\frac{\partial\boldsymbol F}{\partial\boldsymbol q} \frac{d\boldsymbol q}{ds} + \frac{\partial\boldsymbol F}{\partial s} =0$$
+移项后得到：
+$$ \boxed{ \frac{d\boldsymbol q}{ds} = - J^{-1} \frac{\partial\boldsymbol F}{\partial s} } $$
+
+工程实现
+我们先假设：随着规划时刻一点点向前移动，弹道方程的解也会平滑地变化，并且可以求出它的变化趋势。于是，下一时刻的解不必每次都从头开始猜，可以利用上一时刻的解来预测。
+按照预测时使用的信息多少，可以分成两种：
+- 零阶近似：只使用上一时刻的解，直接把它作为下一时刻的初始猜测；
+- 一阶近似：除了使用上一时刻的解，还估计解的变化速度，沿着这个变化趋势预测下一时刻的初始猜测。
+之后，再用 Newton 方法对预测结果进行修正。
+
+把 Taylor 展开写完整：
+$$q(s_j+\Delta s) = q(s_j) + q'(s_j)\Delta s + \frac12q''(s_j)\Delta s^2 + O(\Delta s^3)$$
+近似阶数即为泰勒展开的阶数
+
+1. 零阶简化
+零阶近似只保留常数项
+$$q(s_j+\Delta s) \approx q(s_j)$$
+零阶 continuation 的算法流程
+已知上一时域点的有效解 $$q_j^*$$：
+1. 令下一点初值：
+ $$q_{j+1}^{(0)}=q_j^* $$
+2. 使用新的规划时刻 $$s_{j+1}$$ 构造新的残差：
+ $$F(q,s_{j+1}) $$
+3. 计算新的 Jacobian：
+$$J_q(q,s_{j+1}) $$
+4. 执行 Newton 修正：
+$$ J_q\Delta q=-F $$
+5. 更新：
+$$ q\leftarrow q+\Delta q $$
+6. 直到残差满足阈值或达到最大迭代次数。
+当前 solveFrom() 的逻辑就是：
+$$ \boxed{ q_{j+1}^{(0)}=q_j^* } $$
+然后调用同一套 RK4、Jacobian 和 Newton 校正。
+
+2. 一阶简化
+一阶近似保留 Taylor 展开中的线性项：
+$$q(s_j+\Delta s) \approx q(s_j)+q'(s_j)\Delta s$$
+将零阶continuation策略的初始赋值改为：
+$$q^{(0)}_{j+1}=q^*_j+J_q·\Delta s$$
+失败和回退策略
+整体流程
+暂时无法在飞书文档外展示此内容
+情况 1：没有导数
+如果上一解有效，但 continuation rate 无效：
+$$ q_{j+1}^{(0)}=q_j^* $$
+退回零阶。
+情况 2：Jacobian 奇异
+如果：
+$$ \operatorname{rank}(J)<3 $$
+或条件数超过阈值，则不计算一阶导数，使用零阶 seed。
+情况 3：一阶 seed 超出合理范围
+可对增量限幅：
+$$ \Delta\psi_{\text{predict}} = \operatorname{clip}(\Delta s\dot\psi) $$
+$$ \Delta\vartheta_{\text{predict}} = \operatorname{clip}(\Delta s\dot\vartheta) $$
+$$ \Delta\tau_{\text{predict}} = \operatorname{clip}(\Delta s\dot\tau) $$
+这不是机械限位，而是 continuation 初值的数值稳定限制。
+情况 4：一阶 seed 的 Newton 不收敛
+先尝试：
+$$ q_j^* $$
+作为零阶 seed 重新调用 solveFrom()。
+如果还失败，再调用完整 solve()。
+
+Benchmark测试
+测试平台
+硬件和操作系统
+- CPU：Intel Core i7-14700HX
+- 架构：x86_64
+- 逻辑线程：每核 2 线程
+- 当前环境：WSL2
+- 内核：
+Linux 6.6.87.2-microsoft-standard-WSL2
+- 单路 CPU；当前 WSL 环境报告 7 个物理核心、14 个逻辑线程。
+正式跑分使用：
+taskset -c 0
+因此 benchmark 进程被绑定到逻辑 CPU 0，测试的是单核串行性能。
+编译器和编译选项
+- 编译器：
+g++ (Ubuntu 11.4.0-1ubuntu1~22.04.3) 11.4.0
+- 编译标准：
+C++20
+- 优化选项：
+-O3 -DNDEBUG
+- 编译警告：
+-Wall -Wextra -Wpedantic -Wconversion -Wshadow
+完整编译命令：
+g++ -std=c++20 -O3 -DNDEBUG \
+  -Wall -Wextra -Wpedantic -Wconversion -Wshadow \
+  scripts/ballistic_reference_curve_benchmark.cpp \
+  -o /tmp/ballistic_reference_curve_benchmark
+没有启用：
+-march=native
+-mtune=native
+-flto
+所以这是通用 -O3 编译结果，不是针对 i7-14700HX 指令集特化后的极限结果。
+
+
+---
+测试工况
+- 近距离：静止、高速
+- 中距离：静止、平移、旋转、平移+旋转
+- 远距离：静止、平移、旋转、平移+旋转
+- 20m边界：高目标、低目标
+
+
+---
+结果汇总
+指标
+结果
+时域点数
+250
+装甲板数
+4
+每批候选数
+1000
+测量批次数
+30
+最终有效率
+100%
+一阶模型成功次数
+358560
+一阶失败、零阶成功次数
+0
+一阶和零阶都失败次数
+0
+精度抽样
+1152/1152
+最大参考脱靶
+2.137 mm
+最大 RK4 端点差
+2.137 mm
+平均耗时
+4.716 ms
+P50
+4.647 ms
+P95
+5.614 ms
+P99
+6.333 ms
+最大耗时
+11.942 ms
+高精度参考脱靶:
+使用生产求解得到的同一组：
+$$ (\psi,\vartheta,t_f) $$
+重新进行 4096 步 RK4，得到：
+$$ p_{\text{ref}} $$
+参考脱靶量：
+$$ \boxed{ e_{\text{miss}} = \|p_{\text{ref}}-p_{\text{target}}\| } $$
+当前最大值：
+$$ \boxed{e_{\text{miss,max}}=2.137\text{ mm}} $$
+它是判断生产角度和飞行时间在更精细积分下是否仍能命中的核心精度指标。
+RK4 端点差:
+比较 4096 步参考积分和 3 步生产积分：
+$$ \boxed{ e_{\text{RK4}} = \|p_{\text{ref}}-p_{\text{prod}}\| } $$
+当前最大值：
+$$ \boxed{e_{\text{RK4,max}}=2.137\text{ mm}} $$
+
+
+---
+
+参考文献
+[1] 米基哈哈. 平动-自旋耦合目标下的火控拦截时间t解析与数值混合寻优策略 [OL]. 2026-04-12

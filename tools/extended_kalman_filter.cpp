@@ -1,5 +1,6 @@
 #include "extended_kalman_filter.hpp"
 
+#include <cmath>
 #include <numeric>
 
 namespace tools
@@ -18,6 +19,12 @@ ExtendedKalmanFilter::ExtendedKalmanFilter(
   data["nis_fail"] = 0.0;
   data["nees_fail"] = 0.0;
   data["recent_nis_failures"] = 0.0;
+  // 标准 NIS（pre-fit innovation）：仅做观测，不参与现有收敛门控
+  data["nis_prefit"] = 0.0;
+  data["innovation_yaw"] = 0.0;
+  data["innovation_pitch"] = 0.0;
+  data["innovation_distance"] = 0.0;
+  data["innovation_angle"] = 0.0;
 }
 
 Eigen::VectorXd ExtendedKalmanFilter::predict(const Eigen::MatrixXd & F, const Eigen::MatrixXd & Q)
@@ -47,6 +54,19 @@ Eigen::VectorXd ExtendedKalmanFilter::update(
   std::function<Eigen::VectorXd(const Eigen::VectorXd &, const Eigen::VectorXd &)> z_subtract)
 {
   Eigen::VectorXd x_prior = x;
+
+  // ---------------------------------------------------------------------------
+  // 标准 NIS（pre-fit innovation）：z - h(x_prior)，S = H·P_prior·Hᵀ + R
+  // 与下面那个 "post-fit residual + 后验 P" 的旧实现区分开，只做观测输出，
+  // 不影响 update 结果与现有 nis_fail 门控（行为保持不变）。
+  // 4 自由度卡方：90% 区间 [0.711, 9.488]，95% 上界 9.488，95% 下界 0.484
+  // ---------------------------------------------------------------------------
+  Eigen::VectorXd innovation = z_subtract(z, h(x_prior));
+  Eigen::MatrixXd S_pre = H * P * H.transpose() + R;
+  double nis_prefit = innovation.transpose() * S_pre.inverse() * innovation;
+  // 退化保护：P 或 R 全零时 S 奇异，避免把 NaN 灌进看板/日志
+  if (!std::isfinite(nis_prefit)) nis_prefit = 0.0;
+
   Eigen::MatrixXd K = P * H.transpose() * (H * P * H.transpose() + R).inverse();
 
   // Stable Compution of the Posterior Covariance
@@ -87,6 +107,13 @@ Eigen::VectorXd ExtendedKalmanFilter::update(
   data["nis"] = nis;
   data["nees"] = nees;
   data["recent_nis_failures"] = recent_rate;
+
+  // 标准 NIS 与 innovation（供调参/可视化使用，不参与门控）
+  data["nis_prefit"] = nis_prefit;
+  data["innovation_yaw"] = innovation[0];
+  data["innovation_pitch"] = innovation[1];
+  data["innovation_distance"] = innovation[2];
+  data["innovation_angle"] = innovation[3];
 
   return x;
 }
